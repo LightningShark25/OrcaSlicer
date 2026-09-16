@@ -34,28 +34,38 @@ bool has_visible_base_preset(const PresetCollection& filaments, const std::strin
 //   +20  preset name contains brand_name as a substring
 //        (e.g. "Hyper PLA" in "Hyper PLA @Creality K2 0.4 nozzle")
 //   +10  preset name contains the vendor substring (e.g. "Creality")
+//   +5   preset's filament_type equals the spool's type exactly (PETG-CF vs
+//        PETG-CF). Only added to presets that already scored by name/vendor,
+//        so it never admits a candidate on its own; it just makes a "Hyper PLA"
+//        spool prefer "Hyper PLA" over "Hyper PLA-CF" when both match by name.
 //   Tiebreak: prefer the SYSTEM (shipped) preset over user copies. Brand-
 //   specific system presets carry their own filament_id; user copies of
 //   generic presets inherit a generic filament_id from their parent, so
 //   preferring the user copy can collapse a brand-specific match back to
 //   "Generic PLA" via the inherited id. Plus: this code targets upstream
 //   OrcaSlicer where shipping the user's local tuning would be wrong.
-// Requires the preset's declared filament_type to equal the spool's base type
-// (PLA/PETG/ABS/...) so we never auto-pick a PETG preset for a PLA spool.
+// Requires the preset's declared filament_type to share the spool's BASE type
+// (PLA/PETG/ABS/... via normalize_filament_type) so we never auto-pick a PETG
+// preset for a PLA spool. Both sides are normalised: comparing the spool's base
+// type against the preset's raw type excluded every compound-type preset
+// (PETG-CF, PA-CF, PLA-CF, ...) before scoring, so a PETG-CF spool could never
+// reach a PETG-CF preset and always fell through to the generic PETG fallback.
 // Falls back to filaments.filament_id_by_type(base_type) when nothing scores.
 std::string CrealityPrintAgent::match_filament_preset(const PresetCollection& filaments,
                                                       const std::string&      vendor,
                                                       const std::string&      brand_name,
-                                                      const std::string&      base_type)
+                                                      const std::string&      filament_type)
 {
     auto to_lower = [](std::string s) {
         for (auto& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
         return s;
     };
 
+    const std::string base_type    = normalize_filament_type(filament_type);
     const std::string vendor_lower = to_lower(vendor);
     const std::string brand_lower  = to_lower(brand_name);
     const std::string type_lower   = to_lower(base_type);
+    const std::string exact_lower  = to_lower(filament_type);
 
     struct Match {
         const Preset* preset;
@@ -77,7 +87,7 @@ std::string CrealityPrintAgent::match_filament_preset(const PresetCollection& fi
         std::string preset_type;
         if (const auto* ft = p.config.option<ConfigOptionStrings>("filament_type"))
             if (!ft->values.empty()) preset_type = ft->values.front();
-        if (to_lower(preset_type) != type_lower) continue;
+        if (to_lower(normalize_filament_type(preset_type)) != type_lower) continue;
 
         const std::string name_lower = to_lower(p.name);
         int score = 0;
@@ -86,8 +96,11 @@ std::string CrealityPrintAgent::match_filament_preset(const PresetCollection& fi
         if (!vendor_lower.empty() && name_lower.find(vendor_lower) != std::string::npos)
             score += 10;
 
-        if (score > 0)
-            matches.push_back({&p, score, !p.is_system && !p.is_default});
+        if (score == 0) continue;
+        if (to_lower(preset_type) == exact_lower)
+            score += 5;
+
+        matches.push_back({&p, score, !p.is_system && !p.is_default});
     }
 
     if (matches.empty()) {
@@ -95,7 +108,7 @@ std::string CrealityPrintAgent::match_filament_preset(const PresetCollection& fi
         const bool        fallback_ok = has_visible_base_preset(filaments, fallback);
         BOOST_LOG_TRIVIAL(info)
             << "CrealityPrintAgent: no preset scored for spool {" << vendor << " "
-            << brand_name << " (" << base_type << ")} after considering " << considered
+            << brand_name << " (" << filament_type << ")} after considering " << considered
             << " presets; falling back to generic preset id \"" << fallback << "\""
             << (fallback_ok ? "" : " (NOT visible — returning empty)");
         return fallback_ok ? fallback : std::string();
@@ -110,7 +123,7 @@ std::string CrealityPrintAgent::match_filament_preset(const PresetCollection& fi
 
     BOOST_LOG_TRIVIAL(info)
         << "CrealityPrintAgent: matched spool {" << vendor << " " << brand_name
-        << " (" << base_type << ")} -> preset \"" << matches.front().preset->name
+        << " (" << filament_type << ")} -> preset \"" << matches.front().preset->name
         << "\" (score=" << matches.front().score
         << ", " << matches.size() << " candidate(s) of " << considered << " considered)";
 
@@ -320,7 +333,7 @@ bool CrealityPrintAgent::fetch_filament_info(std::string dev_id)
 
             if (bundle) {
                 tray.tray_info_idx = match_filament_preset(
-                    bundle->filaments, s.vendor, s.brand_name, tray.tray_type);
+                    bundle->filaments, s.vendor, s.brand_name, s.filament_type);
             }
 
             trays.push_back(std::move(tray));

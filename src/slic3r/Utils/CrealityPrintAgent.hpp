@@ -55,11 +55,13 @@ public:
     static std::string normalize_filament_type(const std::string& filament_type);
 
     // Score visible compatible filament presets against the CFS spool metadata and
-    // return the best-matching filament_id. See implementation for scoring details.
+    // return the best-matching filament_id. filament_type is the spool's raw type
+    // as reported by the CFS ("PETG-CF"); the base type is derived internally.
+    // See implementation for scoring details.
     static std::string match_filament_preset(const PresetCollection& filaments,
                                              const std::string&      vendor,
                                              const std::string&      brand_name,
-                                             const std::string&      base_type);
+                                             const std::string&      filament_type);
 };
 
 } // namespace Slic3r
